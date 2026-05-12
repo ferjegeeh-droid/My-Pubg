@@ -1,98 +1,90 @@
 import os
 import subprocess
-import logging
+import asyncio
 import threading
 import http.server
 import socketserver
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from pyrogram import Client, filters
 
-# إعدادات التسجيل لمراقبة البوت
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# --- بياناتك الخاصة التي قدمتها ---
+API_ID = 34854054
+API_HASH = "755af2664322b4e5054bb26b278092ac"
+BOT_TOKEN = "8752935054:AAEmRFpDOK-tWQNlLzrsPyF-9HOkYseh3kI"
 
-# التوكن الخاص بك
-TOKEN = "8752935054:AAEmRFpDOK-tWQNlLzrsPyF-9HOkYseh3kI"
+# إنشاء تطبيق البوت باستخدام Pyrogram
+app = Client("crystal_pubg_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- جزء السيرفر الوهمي لإرضاء منصة Render ---
+# --- سيرفر وهمي لإبقاء Render في حالة Live ---
 def run_health_check():
     port = int(os.environ.get("PORT", 10000))
     handler = http.server.SimpleHTTPRequestHandler
     with socketserver.TCPServer(("", port), handler) as httpd:
-        print(f"Health check server running on port {port}")
+        print(f"Health check running on port {port}")
         httpd.serve_forever()
 
-# --- أوامر البوت ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💎 أهلاً بك في بوت الجودة الكريستالية لببجي!\n\n"
-        "1. أرسل الفيديو كـ (Video) أو (Document).\n"
-        "2. سأقوم بتحويله إلى 4K/60fps (itsscale 4).\n"
-        "3. سأرسل النتيجة كملف لضمان أعلى جودة."
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    await message.reply_text(
+        "🚀 **تم تفعيل البوت الاحترافي بنجاح!**\n\n"
+        "أرسل الآن أي فيديو ببجي (حتى لو حجمه كبير).\n"
+        "سأقوم بتحويله إلى جودة **Crystal 1080p/60fps**."
     )
 
-async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = update.message.video or update.message.document
-    if not hasattr(video, 'file_id'): return
+@app.on_message(filters.video | filters.document)
+async def process_video(client, message):
+    # التحقق من أن الملف فيديو
+    media = message.video or message.document
+    if not media or (message.document and "video" not in message.document.mime_type):
+        return
 
-    status_msg = await update.message.reply_text("📥 جاري تحميل الفيديو...")
+    status_msg = await message.reply_text("📥 جاري تحميل الفيديو من تلجرام...")
     
-    input_path = f"in_{update.message.chat_id}.mp4"
-    output_path = f"crystal_{update.message.chat_id}.mp4"
-    
+    # تحميل الفيديو (بدون قيود الـ 20 ميجا)
+    input_path = await client.download_media(message)
+    output_path = f"crystal_{message.chat.id}.mp4"
+
+    await status_msg.edit_text("⚙️ جاري معالجة الجودة (itsscale 4)...\nقد يستغرق ذلك وقتاً حسب طول المقطع.")
+
+    # أمر FFmpeg المطور (Crystal Quality + Stability)
+    # تم ضبط الإعدادات لتكون قوية وبنفس الوقت لا تسبب انهيار لسيرفر Render
+    command = [
+        'ffmpeg', '-y', '-i', input_path,
+        '-vf', (
+            "scale=1080:1920:flags=lanczos,"  # دقة تيك توك المثالية
+            "unsharp=5:5:1.5:5:5:1.5,"        # حدة الكريستال (Sharpness)
+            "eq=saturation=1.6:contrast=1.2," # تلوين ببجي المشبع
+            "fps=60"                          # سلاسة 60 فريم
+        ),
+        '-c:v', 'libx264', 
+        '-crf', '20',             # جودة عالية جداً
+        '-preset', 'ultrafast',   # سرعة قصوى لتجنب الـ Timeout
+        '-pix_fmt', 'yuv420p',
+        output_path
+    ]
+
     try:
-        # تحميل الفيديو
-        video_file = await context.bot.get_file(video.file_id)
-        await video_file.download_to_drive(input_path)
-
-        await status_msg.edit_text("⚙️ جاري معالجة الجودة (itsscale 4)...\nقد يستغرق دقائق، انتظر قليلاً.")
-
-        # أمر FFmpeg المطور (Crystal PUBG Quality)
-        # ملاحظة: إذا فشلت المعالجة بسبب الرام، سنقلل الـ scale قليلاً
-        command = [
-            'ffmpeg', '-y', '-i', input_path,
-            '-vf', (
-                "scale=1440:2560:flags=lanczos,"  # دقة 2K (أفضل استقراراً للسيرفر من 4K)
-                "unsharp=5:5:1.5:5:5:1.5,"        # حدة الكريستال
-                "eq=saturation=1.6:contrast=1.2," # ألوان قوية كالمقطع المطلوب
-                "minterpolate='fps=60:mi_mode=mci'" # سلاسة 60 فريم
-            ),
-            '-c:v', 'libx264', 
-            '-crf', '18', 
-            '-preset', 'ultrafast', 
-            '-pix_fmt', 'yuv420p',
-            output_path
-        ]
-
+        # تنفيذ المعالجة
         subprocess.run(command, check=True)
         
-        await status_msg.edit_text("✅ تمت المعالجة! جاري الرفع كملف...")
+        await status_msg.edit_text("✅ تمت المعالجة بنجاح! جاري رفع المقطع الكريستالي...")
         
-        with open(output_path, 'rb') as doc:
-            await update.message.reply_document(
-                document=doc,
-                filename="Crystal_Quality.mp4",
-                caption="🔥 جودة كريستال ببجي جاهزة\n🚀 الدقة: 2K / 60fps"
-            )
-            
+        # الرفع كملف (Document) لضمان الجودة الأصلية
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=output_path,
+            caption="💎 **تم تجهيز جودة الكريستال**\n🎬 الدقة: 1080x1920\n⚡️ الفريمات: 60fps"
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ أثناء المعالجة.\nتأكد أن الفيديو قصير (10-15 ثانية).\nالخطأ: {e}")
-    
+        await message.reply_text(f"❌ حدث خطأ أثناء المعالجة: {e}")
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
+        # تنظيف الذاكرة وحذف الملفات المؤقتة
+        if input_path and os.path.exists(input_path): os.remove(input_path)
+        if output_path and os.path.exists(output_path): os.remove(output_path)
         await status_msg.delete()
 
-def main():
-    # تشغيل السيرفر الوهمي في خلفية البوت
-    threading.Thread(target=run_health_check, daemon=True).start()
-
-    # تشغيل البوت
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, process_video))
-    
-    print("البوت يعمل الآن...")
-    application.run_polling()
-
 if __name__ == '__main__':
-    main()
+    # تشغيل سيرفر الـ Health Check في الخلفية
+    threading.Thread(target=run_health_check, daemon=True).start()
+    
+    print("البوت الاحترافي يعمل الآن...")
+    app.run()
